@@ -36,7 +36,7 @@ module RubyLsp
       @project_path = project_path
       @branch = options[:branch] #: String?
       @launcher = options[:launcher] #: bool?
-      patch_thor_to_print_progress_to_stderr! if @launcher
+      force_output_to_stderr! if @launcher
 
       # Regular bundle paths
       @gemfile = begin
@@ -270,17 +270,37 @@ module RubyLsp
     #: (Hash[String, String] env, ?force_install: bool) -> Hash[String, String]
     def run_bundle_install_directly(env, force_install: false)
       RubyVM::YJIT.enable if defined?(RubyVM::YJIT.enable)
-      return update(env) if @needs_update_path.exist?
 
-      # The ENV can only be merged after checking if an update is required because we depend on the original value of
-      # ENV["BUNDLE_GEMFILE"], which gets overridden after the merge
-      FileUtils.touch(@needs_update_path) if should_bundle_update?
+      # The should_bundle_update? check needs to run on the original Bundler environment, but everything else (like
+      # updating or running install) requires the modified environment. Here we compute the check ahead of time and
+      # merge the environment to ensure correct results.
+      #
+      # The symptoms of having these operations in the wrong order is seeing unwanted modifications in the application's
+      # main lockfile because we accidentally run update on the main bundle instead of the composed one.
+      needs_update = should_bundle_update?
       ENV.merge!(env)
 
-      $stderr.puts("Ruby LSP> Checking if the composed bundle is satisfied...")
-      missing_gems = bundle_check
+      return update(env) if @needs_update_path.exist?
 
-      unless missing_gems.empty?
+      FileUtils.touch(@needs_update_path) if needs_update
+
+      $stderr.puts("Ruby LSP> Checking if the composed bundle is satisfied...")
+
+      begin
+        missing_gems = bundle_check
+      rescue Errno::EPIPE, Bundler::HTTPError
+        # These are errors cases where we cannot recover
+        raise
+      rescue => e
+        # If anything fails with bundle check, try to bundle install
+        $stderr.puts("Ruby LSP> Running bundle install because #{e.message}")
+        bundle_install
+        return env
+      end
+
+      if missing_gems.empty?
+        $stderr.puts("Ruby LSP> Bundle already satisfied")
+      else
         $stderr.puts(<<~MESSAGE)
           Ruby LSP> Running bundle install because the following gems are not installed:
           #{missing_gems.map { |g| "#{g.name}: #{g.version}" }.join("\n")}
@@ -289,11 +309,6 @@ module RubyLsp
         bundle_install
       end
 
-      $stderr.puts("Ruby LSP> Bundle already satisfied")
-      env
-    rescue => e
-      $stderr.puts("Ruby LSP> Running bundle install because #{e.message}")
-      bundle_install
       env
     end
 
@@ -480,11 +495,16 @@ module RubyLsp
     end
 
     #: -> void
-    def patch_thor_to_print_progress_to_stderr!
-      return unless defined?(Bundler::Thor::Shell::Basic)
+    def force_output_to_stderr!
+      # Bundler and RubyGems have different UI objects used for printing. We need to ensure that both are configured to
+      # print only to stderr or else they'll break the connection with the editor
+      Gem::DefaultUserInteraction.ui = Gem::StreamUI.new($stdin, $stderr, $stderr, false)
 
-      Bundler::Thor::Shell::Basic.prepend(ThorPatch)
-      Bundler.ui.level = :info
+      ui = Bundler.ui
+      ui.output_stream = :stderr if ui.respond_to?(:output_stream=)
+      ui.level = :info
+
+      Bundler::Thor::Shell::Basic.prepend(ThorPatch) if defined?(Bundler::Thor::Shell::Basic)
     end
   end
 end
