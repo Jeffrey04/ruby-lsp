@@ -44,14 +44,14 @@ To use the Ruby LSP with Nix flakes, set the version manager to `nix-develop`.
 ```
 
 By default, this will use `nix develop --command ruby` to activate the environment. If you need to specify a path to a
-flake, you can do so with the `rubyLsp.customRubyCommand` setting.
+flake, you can do so with the `rubyLsp.flakeDirectory` setting.
 
 ```jsonc
 {
   "rubyLsp.rubyVersionManager": {
     "identifier": "nix-develop"
   },
-  "rubyLsp.customRubyCommand": "/path/to/dir/containing/flake"
+  "rubyLsp.flakeDirectory": "/path/to/dir/containing/flake"
 }
 ```
 

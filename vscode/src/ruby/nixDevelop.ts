@@ -1,11 +1,13 @@
 import * as vscode from "vscode";
 
-import { VersionManager, ActivationResult } from "./versionManager";
+import { ActivationResult, VersionManager } from "./versionManager";
 
 export class NixDevelop extends VersionManager {
   async activate(): Promise<ActivationResult> {
-    const customCommand = this.customCommand();
-    const command = `nix develop ${customCommand} --command ruby`;
+    const flakeDir = this.flakeDirectory();
+    this.outputChannel.info(`Nix flake directory: ${flakeDir || "(empty - using current directory)"}`);
+
+    const command = `nix develop ${flakeDir} --command ruby`;
     const parsedResult = await this.runEnvActivationScript(command);
 
     return {
@@ -16,11 +18,10 @@ export class NixDevelop extends VersionManager {
     };
   }
 
-  private customCommand() {
+  flakeDirectory() {
     const configuration = vscode.workspace.getConfiguration("rubyLsp");
-    const customCommand: string | undefined =
-      configuration.get("customRubyCommand");
+    const flakeDirectory: string | undefined = configuration.get("flakeDirectory");
 
-    return customCommand || "";
+    return flakeDirectory || "";
   }
 }
