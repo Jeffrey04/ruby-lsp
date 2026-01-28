@@ -1,22 +1,22 @@
-import path from "path";
 import os from "os";
+import path from "path";
 
 import * as vscode from "vscode";
 
 import { asyncExec, RubyInterface } from "./common";
-import { WorkspaceChannel } from "./workspaceChannel";
-import { Shadowenv, UntrustedWorkspaceError } from "./ruby/shadowenv";
-import { Chruby } from "./ruby/chruby";
-import { VersionManager } from "./ruby/versionManager";
-import { Mise } from "./ruby/mise";
-import { RubyInstaller } from "./ruby/rubyInstaller";
-import { Rbenv } from "./ruby/rbenv";
-import { NixDevelop } from "./ruby/nixDevelop";
-import { Rvm } from "./ruby/rvm";
-import { None } from "./ruby/none";
-import { Custom } from "./ruby/custom";
 import { Asdf } from "./ruby/asdf";
+import { Chruby } from "./ruby/chruby";
+import { Custom } from "./ruby/custom";
+import { Mise } from "./ruby/mise";
+import { NixDevelop } from "./ruby/nixDevelop";
+import { None } from "./ruby/none";
+import { Rbenv } from "./ruby/rbenv";
+import { RubyInstaller } from "./ruby/rubyInstaller";
 import { Rv } from "./ruby/rv";
+import { Rvm } from "./ruby/rvm";
+import { Shadowenv, UntrustedWorkspaceError } from "./ruby/shadowenv";
+import { VersionManager } from "./ruby/versionManager";
+import { WorkspaceChannel } from "./workspaceChannel";
 
 async function detectMise() {
   const possiblePaths = [
@@ -46,11 +46,8 @@ export enum ManagerIdentifier {
   Shadowenv = "shadowenv",
   Mise = "mise",
   RubyInstaller = "rubyInstaller",
-<<<<<<< HEAD
   NixDevelop = "nix-develop",
-=======
   Rv = "rv",
->>>>>>> upstream/main
   None = "none",
   Custom = "custom",
 }
