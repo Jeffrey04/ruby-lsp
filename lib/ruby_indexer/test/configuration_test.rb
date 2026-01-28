@@ -93,14 +93,19 @@ module RubyIndexer
     end
 
     def test_indexable_uris_does_not_include_non_ruby_files_inside_rubylibdir
-      path = Pathname.new(RbConfig::CONFIG["rubylibdir"]).join("extra_file.txt").to_s
-      FileUtils.touch(path)
+      Dir.mktmpdir do |dir|
+        original_rubylibdir = RbConfig::CONFIG["rubylibdir"]
+        RbConfig::CONFIG["rubylibdir"] = dir
 
-      begin
-        uris = @config.indexable_uris
-        assert(uris.none? { |uri| uri.full_path == path })
-      ensure
-        FileUtils.rm(path)
+        begin
+          path = Pathname.new(dir).join("extra_file.txt").to_s
+          FileUtils.touch(path)
+
+          uris = @config.indexable_uris
+          assert(uris.none? { |uri| uri.full_path == path })
+        ensure
+          RbConfig::CONFIG["rubylibdir"] = original_rubylibdir
+        end
       end
     end
 
@@ -233,18 +238,16 @@ module RubyIndexer
           RUBY
 
           Bundler.with_unbundled_env do
-            capture_subprocess_io { system("bundle install") }
+            capture_subprocess_io do
+              system("bundle install")
 
-            _stdout, stderr = capture_subprocess_io do
               script = [
                 "require \"ruby_lsp/internal\"",
                 "RubyIndexer::Configuration.new.indexable_uris",
               ].join(";")
 
-              system("bundle exec ruby -e '#{script}'")
+              assert(system("bundle exec ruby -e '#{script}'"))
             end
-
-            assert_empty(stderr)
           end
         end
       end

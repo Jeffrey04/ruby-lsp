@@ -16,6 +16,7 @@ import { Rvm } from "./ruby/rvm";
 import { None } from "./ruby/none";
 import { Custom } from "./ruby/custom";
 import { Asdf } from "./ruby/asdf";
+import { Rv } from "./ruby/rv";
 
 async function detectMise() {
   const possiblePaths = [
@@ -45,7 +46,11 @@ export enum ManagerIdentifier {
   Shadowenv = "shadowenv",
   Mise = "mise",
   RubyInstaller = "rubyInstaller",
+<<<<<<< HEAD
   NixDevelop = "nix-develop",
+=======
+  Rv = "rv",
+>>>>>>> upstream/main
   None = "none",
   Custom = "custom",
 }
@@ -65,7 +70,6 @@ export class Ruby implements RubyInterface {
     .getConfiguration("rubyLsp")
     .get<ManagerConfiguration>("rubyVersionManager")!;
 
-  private readonly shell = process.env.SHELL?.replace(/(\s+)/g, "\\$1");
   private _env: NodeJS.ProcessEnv = {};
   private _error = false;
   private readonly context: vscode.ExtensionContext;
@@ -315,6 +319,11 @@ export class Ruby implements RubyInterface {
           new Mise(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
         );
         break;
+      case ManagerIdentifier.Rv:
+        await this.runActivation(
+          new Rv(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
+        );
+        break;
       case ManagerIdentifier.RubyInstaller:
         await this.runActivation(
           new RubyInstaller(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
@@ -369,7 +378,13 @@ export class Ruby implements RubyInterface {
       // If .shadowenv.d doesn't exist, then we check the other version managers
     }
 
-    const managers = [ManagerIdentifier.Chruby, ManagerIdentifier.Rbenv, ManagerIdentifier.Rvm, ManagerIdentifier.Asdf];
+    const managers = [
+      ManagerIdentifier.Chruby,
+      ManagerIdentifier.Rbenv,
+      ManagerIdentifier.Rvm,
+      ManagerIdentifier.Asdf,
+      ManagerIdentifier.Rv,
+    ];
 
     for (const tool of managers) {
       const exists = await this.toolExists(tool);
@@ -396,12 +411,8 @@ export class Ruby implements RubyInterface {
 
   private async toolExists(tool: string) {
     try {
-      let command = this.shell ? `${this.shell} -i -c '` : "";
-      command += `${tool} --version`;
-
-      if (this.shell) {
-        command += "'";
-      }
+      const shell = vscode.env.shell.replace(/(\s+)/g, "\\$1");
+      const command = `${shell} -i -c '${tool} --version'`;
 
       this.outputChannel.info(`Checking if ${tool} is available on the path with command: ${command}`);
 

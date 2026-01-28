@@ -57,6 +57,12 @@ flake, you can do so with the `rubyLsp.customRubyCommand` setting.
 
 This will result in the activation command `nix develop /path/to/dir/containing/flake --command ruby`.
 
+## rv
+
+Ensure rv 0.3.1 or later is installed. The extension automatically detects the Ruby version from a `.ruby-version` or `.tool-versions` file in the project.
+
+Learn more about rv: https://github.com/spinel-coop/rv
+
 ## Custom activation
 
 If you're using a different version manager that's not supported by this extension or if you're manually inserting the Ruby
@@ -70,13 +76,13 @@ shell command that will activate the right Ruby version or add the Ruby `bin` fo
 {
   // Don't forget to set the manager to custom when using this option
   "rubyLsp.rubyVersionManager": {
-    "identifier": "custom",
+    "identifier": "custom"
   },
 
   // Using a different version manager than the ones included by default
   "rubyLsp.customRubyCommand": "my_custom_version_manager activate",
 
   // Adding a custom Ruby bin folder to the PATH
-  "rubyLsp.customRubyCommand": "PATH=/path/to/ruby/bin:$PATH",
+  "rubyLsp.customRubyCommand": "PATH=/path/to/ruby/bin:$PATH"
 }
 ```
