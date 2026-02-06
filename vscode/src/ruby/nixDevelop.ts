@@ -7,7 +7,7 @@ export class NixDevelop extends VersionManager {
     const flakeDir = this.flakeDirectory();
     this.outputChannel.info(`Nix flake directory: ${flakeDir || "(empty - using current directory)"}`);
 
-    const command = `nix develop ${flakeDir} --command ruby`;
+    const command = ["nix", "develop", flakeDir, "--command", "ruby"].filter((part) => part !== "").join(" ");
     const parsedResult = await this.runEnvActivationScript(command);
 
     return {
