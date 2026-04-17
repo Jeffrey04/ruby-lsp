@@ -4,13 +4,40 @@
 require "English"
 require "json"
 require "socket"
-require "singleton"
 require "tmpdir"
 require_relative "../../ruby_indexer/lib/ruby_indexer/uri"
 
 module RubyLsp
   class LspReporter
-    include Singleton
+    @instance = nil #: LspReporter?
+
+    class << self
+      #: -> LspReporter
+      def instance
+        @instance ||= new
+      end
+
+      #: -> bool
+      def start_coverage?
+        ENV["RUBY_LSP_TEST_RUNNER"] == "coverage"
+      end
+
+      #: -> bool
+      def executed_under_test_runner?
+        !!(ENV["RUBY_LSP_TEST_RUNNER"] && ENV["RUBY_LSP_ENV"] != "test")
+      end
+
+      #: (Method | UnboundMethod) -> [URI::Generic, Integer?]?
+      def uri_and_line_for(method_object)
+        file_path, line = method_object.source_location
+        return unless file_path
+        return if file_path.start_with?("(eval at ")
+
+        uri = URI::Generic.from_path(path: File.expand_path(file_path))
+        zero_based_line = line ? line - 1 : nil
+        [uri, zero_based_line]
+      end
+    end
 
     # https://code.visualstudio.com/api/references/vscode-api#Position
     #: type position = { line: Integer, character: Integer }
@@ -50,6 +77,8 @@ module RubyLsp
       end #: IO | StringIO
 
       @invoked_shutdown = false #: bool
+      @message_queue = Thread::Queue.new #: Thread::Queue
+      @writer = Thread.new { write_loop } #: Thread
     end
 
     #: -> void
@@ -68,6 +97,8 @@ module RubyLsp
       @invoked_shutdown = true
 
       send_message("finish")
+      @message_queue.close
+      @writer.join
       @io.close
     end
 
@@ -94,17 +125,6 @@ module RubyLsp
     #: (id: String, message: String?, uri: URI::Generic) -> void
     def record_error(id:, message:, uri:)
       send_message("error", id: id, message: message, uri: uri.to_s)
-    end
-
-    #: (Method | UnboundMethod) -> [URI::Generic, Integer?]?
-    def uri_and_line_for(method_object)
-      file_path, line = method_object.source_location
-      return unless file_path
-      return if file_path.start_with?("(eval at ")
-
-      uri = URI::Generic.from_path(path: File.expand_path(file_path))
-      zero_based_line = line ? line - 1 : nil
-      [uri, zero_based_line]
     end
 
     # Gather the results returned by Coverage.result and format like the VS Code test explorer expects
@@ -195,23 +215,11 @@ module RubyLsp
       internal_shutdown unless @invoked_shutdown
     end
 
-    class << self
-      #: -> bool
-      def start_coverage?
-        ENV["RUBY_LSP_TEST_RUNNER"] == "coverage"
-      end
-
-      #: -> bool
-      def executed_under_test_runner?
-        !!(ENV["RUBY_LSP_TEST_RUNNER"] && ENV["RUBY_LSP_ENV"] != "test")
-      end
-    end
-
     private
 
-    #: (String) -> TCPSocket
+    #: (String) -> Socket
     def socket(port)
-      socket = TCPSocket.new("localhost", port)
+      socket = Socket.tcp("localhost", port)
       socket.binmode
       socket.sync = true
       socket
@@ -220,7 +228,14 @@ module RubyLsp
     #: (String?, **untyped) -> void
     def send_message(method_name, **params)
       json_message = { method: method_name, params: params }.to_json
-      @io.write("Content-Length: #{json_message.bytesize}\r\n\r\n#{json_message}")
+      @message_queue << "Content-Length: #{json_message.bytesize}\r\n\r\n#{json_message}"
+    end
+
+    #: -> void
+    def write_loop
+      while (message = @message_queue.pop)
+        @io.write(message)
+      end
     end
   end
 end

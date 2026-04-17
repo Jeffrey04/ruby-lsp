@@ -3,6 +3,12 @@
 
 module RubyLsp
   class Server < BaseServer
+    NON_REPORTABLE_SETUP_ERRORS = [
+      Bundler::GemNotFound,
+      Bundler::GitError,
+      Bundler::Dsl::DSLError,
+    ].freeze #: Array[singleton(StandardError)]
+
     # Only for testing
     #: GlobalState
     attr_reader :global_state
@@ -118,6 +124,16 @@ module RubyLsp
         @global_state.synchronize { @cancelled_requests << message[:params][:id] }
       when nil
         process_response(message) if message[:result]
+      else
+        id = message[:id]
+
+        if id
+          send_message(Error.new(
+            id: id,
+            code: Constant::ErrorCodes::METHOD_NOT_FOUND,
+            message: "Method not found: #{message[:method]}",
+          ))
+        end
       end
     rescue DelegateRequestError
       send_message(Error.new(id: message[:id], code: DelegateRequestError::CODE, message: "DELEGATE_REQUEST"))
@@ -315,7 +331,7 @@ module RubyLsp
 
       global_state_notifications.each { |notification| send_message(notification) }
 
-      if @setup_error
+      if @setup_error && NON_REPORTABLE_SETUP_ERRORS.none? { |error_class| @setup_error.is_a?(error_class) }
         send_message(Notification.telemetry(
           type: "error",
           errorMessage: @setup_error.message,
@@ -1211,7 +1227,7 @@ module RubyLsp
             }
           end
         end
-      rescue Bundler::GemNotFound, Bundler::GemfileNotFound
+      rescue Bundler::GemNotFound, Bundler::GemfileNotFound, Errno::ENOENT
         []
       end
 
@@ -1436,6 +1452,7 @@ module RubyLsp
             ),
             File.expand_path("../../exe/ruby-lsp-launcher", __dir__),
             @global_state.workspace_uri.to_s,
+            *ARGV,
             chdir: @global_state.workspace_path,
           )
         end

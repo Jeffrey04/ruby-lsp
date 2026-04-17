@@ -5,7 +5,13 @@ import * as vscode from "vscode";
 
 import { WorkspaceChannel } from "../workspaceChannel";
 
-import { ActivationResult, VersionManager, ACTIVATION_SEPARATOR } from "./versionManager";
+import {
+  ActivationResult,
+  MissingRubyError,
+  NonReportableError,
+  VersionManager,
+  ACTIVATION_SEPARATOR,
+} from "./versionManager";
 
 interface RubyVersion {
   engine?: string;
@@ -28,8 +34,9 @@ export class Chruby extends VersionManager {
     outputChannel: WorkspaceChannel,
     context: vscode.ExtensionContext,
     manuallySelectRuby: () => Promise<void>,
+    customBundleGemfile?: string,
   ) {
-    super(workspaceFolder, outputChannel, context, manuallySelectRuby);
+    super(workspaceFolder, outputChannel, context, manuallySelectRuby, customBundleGemfile);
 
     const configuredRubies = vscode.workspace
       .getConfiguration("rubyLsp")
@@ -225,7 +232,7 @@ export class Chruby extends VersionManager {
       return closest;
     }
 
-    throw new Error("Cannot find any Ruby installations");
+    throw new MissingRubyError("Cannot find any Ruby installations");
   }
 
   // Returns the Ruby version information including version and engine. E.g.: ruby-3.3.0, truffleruby-21.3.0
@@ -247,13 +254,13 @@ export class Chruby extends VersionManager {
       }
 
       if (version === "") {
-        throw new Error(`Ruby version file ${rubyVersionUri.fsPath} is empty`);
+        throw new NonReportableError(`Ruby version file ${rubyVersionUri.fsPath} is empty`);
       }
 
       const match = /((?<engine>[A-Za-z]+)-)?(?<version>\d+\.\d+(\.\d+)?(-[A-Za-z0-9]+)?)/.exec(version);
 
       if (!match?.groups) {
-        throw new Error(
+        throw new NonReportableError(
           `Ruby version file ${rubyVersionUri.fsPath} contains invalid format. Expected (engine-)?version, got ${version}`,
         );
       }
@@ -424,15 +431,15 @@ export class Chruby extends VersionManager {
       }
     }
 
-    throw new Error("Cannot find any Ruby installations");
+    throw new MissingRubyError("Cannot find any Ruby installations");
   }
 
   private missingRubyError(version: string) {
-    return new Error(`Cannot find Ruby installation for version ${version}`);
+    return new MissingRubyError(`Cannot find Ruby installation for version ${version}`);
   }
 
   private rubyVersionError() {
-    return new Error(
+    return new NonReportableError(
       `Cannot find .ruby-version file. Please specify the Ruby version in a
            .ruby-version either in ${this.bundleUri.fsPath} or in a parent directory`,
     );

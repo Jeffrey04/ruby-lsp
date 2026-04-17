@@ -85,12 +85,11 @@ export class Ruby implements RubyInterface {
     this.outputChannel = outputChannel;
     this.telemetry = telemetry;
 
-    const customBundleGemfile: string = vscode.workspace.getConfiguration("rubyLsp").get("bundleGemfile")!;
+    const rawBundleGemfile: string = vscode.workspace.getConfiguration("rubyLsp").get("bundleGemfile")!;
+    const customBundleGemfile = rawBundleGemfile.replace(/\$\{workspaceFolder\}/g, this.workspaceFolder.uri.fsPath);
 
     if (customBundleGemfile.length > 0) {
-      this.customBundleGemfile = path.isAbsolute(customBundleGemfile)
-        ? customBundleGemfile
-        : path.resolve(path.join(this.workspaceFolder.uri.fsPath, customBundleGemfile));
+      this.customBundleGemfile = path.resolve(this.workspaceFolder.uri.fsPath, customBundleGemfile);
     }
   }
 
@@ -122,6 +121,14 @@ export class Ruby implements RubyInterface {
     this.versionManager = versionManager;
     this._error = false;
 
+    if (this.customBundleGemfile) {
+      try {
+        await vscode.workspace.fs.stat(vscode.Uri.file(this.customBundleGemfile));
+      } catch (_error: any) {
+        throw new Error(`The configured bundle gemfile ${this.customBundleGemfile} does not exist`);
+      }
+    }
+
     const workspaceRubyPath = await this.cachedWorkspaceRubyPath();
 
     if (workspaceRubyPath) {
@@ -133,6 +140,7 @@ export class Ruby implements RubyInterface {
           this.context,
           this.manuallySelectRuby.bind(this),
           workspaceRubyPath,
+          this.customBundleGemfile,
         ),
       );
     } else {
@@ -145,7 +153,7 @@ export class Ruby implements RubyInterface {
       try {
         await this.runManagerActivation();
       } catch (error: any) {
-        if (!(error instanceof UntrustedWorkspaceError)) {
+        if (!(error instanceof NonReportableError)) {
           this.telemetry.logError(error, {
             appType: "extension",
             appVersion: this.context.extension.packageJSON.version,
@@ -167,6 +175,7 @@ export class Ruby implements RubyInterface {
               this.context,
               this.manuallySelectRuby.bind(this),
               globalRubyPath,
+              this.customBundleGemfile,
             ),
           );
         } else {
@@ -185,7 +194,7 @@ export class Ruby implements RubyInterface {
 
     if (!this.error) {
       this.fetchRubyVersionInfo();
-      await this.setupBundlePath();
+      this.setupBundlePath();
     }
   }
 
@@ -266,7 +275,7 @@ export class Ruby implements RubyInterface {
       // RUBYOPT may be empty or it may contain bundler paths. In the second case, we must concat to avoid accidentally
       // removing the paths from the env variable
       if (this._env.RUBYOPT) {
-        this._env.RUBYOPT.concat(" --yjit");
+        this._env.RUBYOPT += " --yjit";
       } else {
         this._env.RUBYOPT = "--yjit";
       }
@@ -290,41 +299,36 @@ export class Ruby implements RubyInterface {
   }
 
   private async runManagerActivation() {
+    const manuallySelectRuby = this.manuallySelectRuby.bind(this);
+    const args = [
+      this.workspaceFolder,
+      this.outputChannel,
+      this.context,
+      manuallySelectRuby,
+      this.customBundleGemfile,
+    ] as const;
+
     switch (this.versionManager.identifier) {
       case ManagerIdentifier.Asdf:
-        await this.runActivation(
-          new Asdf(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
-        );
+        await this.runActivation(new Asdf(...args));
         break;
       case ManagerIdentifier.Chruby:
-        await this.runActivation(
-          new Chruby(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
-        );
+        await this.runActivation(new Chruby(...args));
         break;
       case ManagerIdentifier.Rbenv:
-        await this.runActivation(
-          new Rbenv(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
-        );
+        await this.runActivation(new Rbenv(...args));
         break;
       case ManagerIdentifier.Rvm:
-        await this.runActivation(
-          new Rvm(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
-        );
+        await this.runActivation(new Rvm(...args));
         break;
       case ManagerIdentifier.Mise:
-        await this.runActivation(
-          new Mise(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
-        );
+        await this.runActivation(new Mise(...args));
         break;
       case ManagerIdentifier.Rv:
-        await this.runActivation(
-          new Rv(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
-        );
+        await this.runActivation(new Rv(...args));
         break;
       case ManagerIdentifier.RubyInstaller:
-        await this.runActivation(
-          new RubyInstaller(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
-        );
+        await this.runActivation(new RubyInstaller(...args));
         break;
       case ManagerIdentifier.NixDevelop:
         await this.runActivation(
@@ -332,35 +336,31 @@ export class Ruby implements RubyInterface {
         );
         break;
       case ManagerIdentifier.Custom:
-        await this.runActivation(
-          new Custom(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
-        );
+        await this.runActivation(new Custom(...args));
         break;
       case ManagerIdentifier.None:
         await this.runActivation(
-          new None(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
+          new None(
+            this.workspaceFolder,
+            this.outputChannel,
+            this.context,
+            manuallySelectRuby,
+            undefined,
+            this.customBundleGemfile,
+          ),
         );
         break;
       default:
-        await this.runActivation(
-          new Shadowenv(this.workspaceFolder, this.outputChannel, this.context, this.manuallySelectRuby.bind(this)),
-        );
+        await this.runActivation(new Shadowenv(...args));
         break;
     }
   }
 
-  private async setupBundlePath() {
+  private setupBundlePath() {
     // Some users like to define a completely separate Gemfile for development tools. We allow them to use
     // `rubyLsp.bundleGemfile` to configure that and need to inject it into the environment
-    if (!this.customBundleGemfile) {
-      return;
-    }
-
-    try {
-      await vscode.workspace.fs.stat(vscode.Uri.file(this.customBundleGemfile));
+    if (this.customBundleGemfile) {
       this._env.BUNDLE_GEMFILE = this.customBundleGemfile;
-    } catch (_error: any) {
-      throw new Error(`The configured bundle gemfile ${this.customBundleGemfile} does not exist`);
     }
   }
 

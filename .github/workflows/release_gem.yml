@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - v[0-9]+.[0-9]+.[0-9]+
+      - v[0-9]+.[0-9]+.[0-9]+.beta[0-9]*
 
 jobs:
   release_gem:
@@ -24,12 +25,12 @@ jobs:
           persist-credentials: false
 
       - name: Set up Ruby
-        uses: ruby/setup-ruby@90be1154f987f4dc0fe0dd0feedac9e473aa4ba8 # v1.286.0
+        uses: ruby/setup-ruby@4c56a21280b36d862b5fc31348f463d60bdc55d5 # v1.301.0
         with:
           bundler-cache: true
 
       - name: Release gem on RubyGems.org
-        uses: rubygems/release-gem@1c162a739e8b4cb21a676e97b087e8268d8fc40b # v1.1.2
+        uses: rubygems/release-gem@6317d8d1f7e28c24d28f6eff169ea854948bd9f7 # v1.2.0
 
   release_github:
     name: Create GitHub release
@@ -45,7 +46,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Create release
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
           script: |
@@ -53,7 +54,12 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
             });
-            const previousRelease = data.find((release) => !release.tag_name.startsWith("vscode-ruby-lsp") && release.tag_name !== "${{ github.ref_name }}");
+            const isPreRelease = "${{ github.ref_name }}".includes(".beta");
+            const previousRelease = data.find((release) =>
+              !release.tag_name.startsWith("vscode-ruby-lsp") &&
+              release.tag_name !== "${{ github.ref_name }}" &&
+              release.prerelease === isPreRelease
+            );
 
             const commitResponse = await github.rest.repos.compareCommits({
               owner: context.repo.owner,
@@ -113,5 +119,6 @@ jobs:
               repo: context.repo.repo,
               tag_name: "${{ github.ref }}",
               name: "${{ github.ref_name }}",
-              body: content
+              body: content,
+              prerelease: "${{ github.ref_name }}".includes(".beta")
             });

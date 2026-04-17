@@ -2,7 +2,7 @@
   "name": "ruby-lsp",
   "displayName": "Ruby LSP",
   "description": "VS Code plugin for connecting with the Ruby LSP",
-  "version": "0.10.0",
+  "version": "0.10.2",
   "publisher": "Shopify",
   "repository": {
     "type": "git",
@@ -473,11 +473,6 @@
           "type": "integer",
           "default": 30
         },
-        "rubyLsp.branch": {
-          "description": "Run the Ruby LSP server from the specified branch rather than using the released gem. Only supported if not using bundleGemfile",
-          "type": "string",
-          "default": ""
-        },
         "rubyLsp.pullDiagnosticsOn": {
           "description": "When to pull diagnostics from the server (on change, save or both). Selecting 'save' may significantly improve performance on large files",
           "type": "string",
@@ -566,6 +561,10 @@
             },
             "launcher": {
               "description": "Opt-in/out of the new launcher mode",
+              "type": "boolean"
+            },
+            "betaServer": {
+              "description": "Opt-in/out of beta server versions",
               "type": "boolean"
             }
           },
@@ -823,24 +822,24 @@
     "ws": ">= 7.4.6"
   },
   "devDependencies": {
-    "@babel/core": "^7.28.6",
+    "@babel/core": "^7.29.0",
     "@eslint/js": "^9.39.2",
     "@types/mocha": "^10.0.10",
     "@types/node": "25.x",
-    "@types/sinon": "^21.0.0",
+    "@types/sinon": "^21.0.1",
     "@types/vscode": "^1.91.0",
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.7.1",
-    "esbuild": "^0.27.2",
+    "esbuild": "^0.28.0",
     "eslint": "^9.30.1",
     "eslint-plugin-prettier": "^5.5.5",
-    "glob": "^13.0.0",
+    "glob": "^13.0.6",
     "mocha": "^11.7.5",
-    "ovsx": "^0.10.8",
-    "prettier": "^3.8.1",
-    "sinon": "^21.0.1",
-    "typescript": "^5.9.3",
-    "typescript-eslint": "^8.53.1",
+    "ovsx": "^0.10.10",
+    "prettier": "^3.8.2",
+    "sinon": "^21.1.2",
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.58.1",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2"
   },

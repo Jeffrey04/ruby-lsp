@@ -94,7 +94,7 @@ module RubyLsp
 
       #: (Prism::MatchWriteNode node) -> void
       def on_match_write_node_leave(node)
-        @inside_regex_capture = true if node.call.message == "=~"
+        @inside_regex_capture = false if node.call.message == "=~"
       end
 
       #: (Prism::DefNode node) -> void
@@ -162,7 +162,7 @@ module RubyLsp
 
       #: (Prism::SelfNode node) -> void
       def on_self_node_enter(node)
-        @response_builder.add_token(node.location, :variable, [:default_library])
+        @response_builder.add_token(node.location, :variable, [:defaultLibrary])
       end
 
       #: (Prism::LocalVariableWriteNode node) -> void

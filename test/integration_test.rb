@@ -9,6 +9,22 @@ class IntegrationTest < Minitest::Test
     @bundle_path = Bundler.bundle_path.to_s
   end
 
+  def test_ruby_lsp_flags_parsed_correctly
+    stdout, _stderr, status = Open3.capture3(
+      Gem.ruby, File.join(__dir__, "..", "exe", "ruby-lsp"), "--version"
+    )
+    assert_equal(0, status.exitstatus)
+    assert_match(/\d+\.\d+\.\d+/, stdout)
+  end
+
+  def test_ruby_lsp_invalid_option_rejected
+    _stdout, stderr, status = Open3.capture3(
+      Gem.ruby, File.join(__dir__, "..", "exe", "ruby-lsp"), "--nonexistent"
+    )
+    assert_equal(1, status.exitstatus)
+    assert_match(/invalid option/, stderr)
+  end
+
   def test_ruby_lsp_doctor_works
     skip("CI only") unless ENV["CI"]
 
@@ -30,7 +46,7 @@ class IntegrationTest < Minitest::Test
   def test_activation_script_succeeds_even_on_binary_encoding
     ENV["LC_ALL"] = "C"
     ENV["LANG"] = "C"
-    ENV["PS1"] = "\xE2\x96\xB7".b
+    ENV["NOT_VALID"] = "\xE2\x96\xB7".b
 
     _stdout, stderr, status = Open3.capture3(
       "ruby",
@@ -49,7 +65,7 @@ class IntegrationTest < Minitest::Test
     refute_nil(gem_path)
     assert(yjit)
 
-    assert(fields.find { |f| f.start_with?("PS1RUBY_LSP_VS") })
+    assert(fields.find { |f| f.start_with?("NOT_VALIDRUBY_LSP_VS") })
 
     fields.each do |field|
       key, value = field.split("RUBY_LSP_VS")

@@ -31,11 +31,16 @@ module RubyLsp
 
     FOUR_HOURS = 4 * 60 * 60 #: Integer
 
+    # Gems that should be kept up to date in the composed bundle. When updating, any of these gems that are not
+    # already in the user's Gemfile will be updated together.
+    GEMS_TO_UPDATE = ["ruby-lsp", "debug", "prism", "rbs"].freeze #: Array[String]
+    RUBY_LSP_MIN_VERSION = "0.18.0" #: String
+
     #: (String project_path, **untyped options) -> void
     def initialize(project_path, **options)
       @project_path = project_path
-      @branch = options[:branch] #: String?
       @launcher = options[:launcher] #: bool?
+      @beta = options[:beta] #: bool?
       force_output_to_stderr! if @launcher
 
       # Regular bundle paths
@@ -55,7 +60,7 @@ module RubyLsp
       @custom_dir = Pathname.new(".ruby-lsp").expand_path(@project_path) #: Pathname
       @custom_gemfile = @custom_dir + @gemfile_name #: Pathname
       @custom_lockfile = @custom_dir + (@lockfile&.basename || "Gemfile.lock") #: Pathname
-      @lockfile_hash_path = @custom_dir + "main_lockfile_hash" #: Pathname
+      @freshness_hash_path = @custom_dir + "freshness_hash" #: Pathname
       @last_updated_path = @custom_dir + "last_updated" #: Pathname
       @error_path = @custom_dir + "install_error" #: Pathname
       @already_composed_path = @custom_dir + "bundle_is_composed" #: Pathname
@@ -114,17 +119,24 @@ module RubyLsp
         return run_bundle_install(@custom_gemfile)
       end
 
-      if @lockfile_hash && @custom_lockfile.exist? && @lockfile_hash_path.exist? &&
-          @lockfile_hash_path.read == @lockfile_hash
+      # Our freshness hash determines if we need to copy the lockfile from the main app again and run bundle install
+      # from scratch. We use a combination of the main app's lockfile and the composed Gemfile. The goal is to
+      # automatically account for CLI arguments which can change the Gemfile we compose. If the CLI arguments or the
+      # main lockfile change, we need to make sure we're re-composing.
+      freshness_digest = Digest::SHA256.hexdigest("#{@lockfile_hash}#{@custom_gemfile.read}")
+
+      if @lockfile_hash && @custom_lockfile.exist? && @freshness_hash_path.exist? &&
+          @freshness_hash_path.read == freshness_digest
         $stderr.puts(
           "Ruby LSP> Skipping composed bundle setup since #{@custom_lockfile} already exists and is up to date",
         )
         return run_bundle_install(@custom_gemfile)
       end
 
+      @needs_update_path.delete if @needs_update_path.exist?
       FileUtils.cp(@lockfile.to_s, @custom_lockfile.to_s)
       correct_relative_remote_paths
-      @lockfile_hash_path.write(@lockfile_hash)
+      @freshness_hash_path.write(freshness_digest)
       run_bundle_install(@custom_gemfile)
     end
 
@@ -164,9 +176,8 @@ module RubyLsp
       end
 
       unless @dependencies["ruby-lsp"]
-        ruby_lsp_entry = +'gem "ruby-lsp", require: false, group: :development'
-        ruby_lsp_entry << ", github: \"Shopify/ruby-lsp\", branch: \"#{@branch}\"" if @branch
-        parts << ruby_lsp_entry
+        version = @beta ? "0.a" : RUBY_LSP_MIN_VERSION
+        parts << "gem \"ruby-lsp\", \">= #{version}\", require: false, group: :development"
       end
 
       unless @dependencies["debug"]
@@ -234,7 +245,7 @@ module RubyLsp
         # If no error occurred, then clear previous errors
         @error_path.delete if @error_path.exist?
         $stderr.puts("Ruby LSP> Composed bundle installation complete")
-      rescue Errno::EPIPE, Bundler::HTTPError
+      rescue Errno::EPIPE, Bundler::HTTPError, Bundler::InstallError
         # There are cases where we expect certain errors to happen occasionally, and we don't want to write them to
         # a file, which would report to telemetry on the next launch.
         #
@@ -242,6 +253,7 @@ module RubyLsp
         # install. This situation may happen because, while running bundle install, the server is not yet ready to
         # receive shutdown requests and we may continue doing work until the process is killed.
         # - Bundler might also encounter a network error.
+        # - Native extension build failures (InstallError) are user environment issues that Ruby LSP cannot resolve.
         @error_path.delete if @error_path.exist?
       rescue => e
         # Write the error object to a file so that we can read it from the parent process
@@ -331,26 +343,26 @@ module RubyLsp
     def update(env)
       # Try to auto upgrade the gems we depend on, unless they are in the Gemfile as that would result in undesired
       # source control changes
-      gems = ["ruby-lsp", "debug", "prism"].reject { |dep| @dependencies[dep] }
+      gems = GEMS_TO_UPDATE.reject { |dep| @dependencies[dep] }
       gems << "ruby-lsp-rails" if @rails_app && !@dependencies["ruby-lsp-rails"]
 
       Bundler::CLI::Update.new({ conservative: true }, gems).run
       correct_relative_remote_paths if @custom_lockfile.exist?
-      @needs_update_path.delete
+      @needs_update_path.delete if @needs_update_path.exist?
       @last_updated_path.write(Time.now.iso8601)
       env
     end
 
     #: (Hash[String, String] env) -> Hash[String, String]
     def run_bundle_install_through_command(env)
-      # If `ruby-lsp` and `debug` (and potentially `ruby-lsp-rails`) are already in the Gemfile, then we shouldn't try
-      # to upgrade them or else we'll produce undesired source control changes. If the composed bundle was just created
-      # and any of `ruby-lsp`, `ruby-lsp-rails` or `debug` weren't a part of the Gemfile, then we need to run `bundle
-      # install` for the first time to generate the Gemfile.lock with them included or else Bundler will complain that
-      # they're missing. We can only update if the custom `.ruby-lsp/Gemfile.lock` already exists and includes all gems
+      # If the gems in GEMS_TO_UPDATE (and potentially `ruby-lsp-rails`) are already in the Gemfile, then we shouldn't
+      # try to upgrade them or else we'll produce undesired source control changes. If the composed bundle was just
+      # created and any of those gems weren't a part of the Gemfile, then we need to run `bundle install` for the first
+      # time to generate the Gemfile.lock with them included or else Bundler will complain that they're missing. We can
+      # only update if the custom `.ruby-lsp/Gemfile.lock` already exists and includes all gems
 
       # When not updating, we run `(bundle check || bundle install)`
-      # When updating, we run `((bundle check && bundle update ruby-lsp debug) || bundle install)`
+      # When updating, we run `((bundle check && bundle update <GEMS_TO_UPDATE>) || bundle install)`
       bundler_path = File.join(Gem.default_bindir, "bundle")
       base_command = (!Gem.win_platform? && File.exist?(bundler_path) ? "#{Gem.ruby} #{bundler_path}" : "bundle").dup
 
@@ -361,12 +373,11 @@ module RubyLsp
       command = +"(#{base_command} check"
 
       if should_bundle_update?
-        # If any of `ruby-lsp`, `ruby-lsp-rails` or `debug` are not in the Gemfile, try to update them to the latest
-        # version
+        # If any of the gems in GEMS_TO_UPDATE (or `ruby-lsp-rails` for Rails apps) are not in the Gemfile, try to
+        # update them to the latest version
         command.prepend("(")
         command << " && #{base_command} update "
-        command << "ruby-lsp " unless @dependencies["ruby-lsp"]
-        command << "debug " unless @dependencies["debug"]
+        GEMS_TO_UPDATE.each { |gem| command << "#{gem} " unless @dependencies[gem] }
         command << "ruby-lsp-rails " if @rails_app && !@dependencies["ruby-lsp-rails"]
         command.delete_suffix!(" ")
         command << ")"

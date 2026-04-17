@@ -74,7 +74,7 @@ class SetupBundlerTest < Minitest::Test
           assert_path_exists(".ruby-lsp")
           assert_path_exists(".ruby-lsp/Gemfile")
           assert_path_exists(".ruby-lsp/Gemfile.lock")
-          assert_path_exists(".ruby-lsp/main_lockfile_hash")
+          assert_path_exists(".ruby-lsp/freshness_hash")
           assert_match("ruby-lsp", File.read(".ruby-lsp/Gemfile"))
           assert_match("debug", File.read(".ruby-lsp/Gemfile"))
           refute_match("ruby-lsp-rails", File.read(".ruby-lsp/Gemfile"))
@@ -101,7 +101,7 @@ class SetupBundlerTest < Minitest::Test
           assert_path_exists(".ruby-lsp")
           assert_path_exists(".ruby-lsp/Gemfile")
           assert_path_exists(".ruby-lsp/Gemfile.lock")
-          assert_path_exists(".ruby-lsp/main_lockfile_hash")
+          assert_path_exists(".ruby-lsp/freshness_hash")
           assert_match("ruby-lsp", File.read(".ruby-lsp/Gemfile"))
           assert_match("debug", File.read(".ruby-lsp/Gemfile"))
           assert_match("ruby-lsp-rails", File.read(".ruby-lsp/Gemfile"))
@@ -176,7 +176,7 @@ class SetupBundlerTest < Minitest::Test
         Bundler.with_unbundled_env do
           stub_bundle_with_env(
             bundle_env(dir, ".ruby-lsp/Gemfile"),
-            /((bundle _[\d\.]+_ check && bundle _[\d\.]+_ update ruby-lsp debug) || bundle _[\d\.]+_ install) 1>&2/,
+            /((bundle _[\d\.]+_ check && bundle _[\d\.]+_ update ruby-lsp debug prism rbs) || bundle _[\d\.]+_ install) 1>&2/,
           )
 
           FileUtils.expects(:cp).never
@@ -299,20 +299,6 @@ class SetupBundlerTest < Minitest::Test
           refute_path_exists(".ruby-lsp/Gemfile")
         end
       end
-    end
-  end
-
-  def test_creates_composed_bundle_with_specified_branch
-    in_temp_dir do |dir|
-      Bundler.with_unbundled_env do
-        stub_bundle_with_env(bundle_env(dir, ".ruby-lsp/Gemfile"))
-        run_script(File.realpath(dir), branch: "test-branch")
-      end
-
-      assert_path_exists(".ruby-lsp")
-      assert_path_exists(".ruby-lsp/Gemfile")
-      assert_match(%r{ruby-lsp.*github: "Shopify/ruby-lsp", branch: "test-branch"}, File.read(".ruby-lsp/Gemfile"))
-      assert_match("debug", File.read(".ruby-lsp/Gemfile"))
     end
   end
 
@@ -538,42 +524,24 @@ class SetupBundlerTest < Minitest::Test
 
   def test_recovers_from_stale_lockfiles
     in_temp_dir do |dir|
-      custom_dir = File.join(dir, ".ruby-lsp")
-      FileUtils.mkdir_p(custom_dir)
-
-      # Write the main Gemfile and lockfile with valid versions
       File.write(File.join(dir, "Gemfile"), <<~GEMFILE)
         source "https://rubygems.org"
         gem "stringio"
       GEMFILE
 
-      lockfile_contents = <<~LOCKFILE
-        GEM
-          remote: https://rubygems.org/
-          specs:
-            stringio (3.1.0)
+      capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          system("bundle install")
 
-        PLATFORMS
-          arm64-darwin-23
-          ruby
+          # First run to set up the composed bundle correctly, including the freshness hash
+          run_script(dir)
+        end
+      end
 
-        DEPENDENCIES
-          stringio
-
-        BUNDLED WITH
-          2.5.7
-      LOCKFILE
-      File.write(File.join(dir, "Gemfile.lock"), lockfile_contents)
-
-      # Write the lockfile hash based on the valid file
-      File.write(File.join(custom_dir, "main_lockfile_hash"), Digest::SHA256.hexdigest(lockfile_contents))
-
-      # Write the composed bundle's lockfile using a fake version that doesn't exist to force bundle install to fail
-      File.write(File.join(custom_dir, "Gemfile"), <<~GEMFILE)
-        source "https://rubygems.org"
-        gem "stringio"
-      GEMFILE
-      File.write(File.join(custom_dir, "Gemfile.lock"), <<~LOCKFILE)
+      # Tamper with the composed lockfile using a fake version that doesn't exist to force bundle install to fail.
+      # The freshness hash from the first run still matches (main lockfile and composed Gemfile are unchanged), so
+      # the stale lockfile will NOT be re-copied and bundle install will encounter the bad version.
+      File.write(File.join(dir, ".ruby-lsp", "Gemfile.lock"), <<~LOCKFILE)
         GEM
           remote: https://rubygems.org/
           specs:
@@ -590,8 +558,10 @@ class SetupBundlerTest < Minitest::Test
           2.5.7
       LOCKFILE
 
-      Bundler.with_unbundled_env do
-        run_script(dir)
+      capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          run_script(dir)
+        end
       end
 
       # Verify that the script recovered and re-generated the composed bundle from scratch
@@ -732,11 +702,50 @@ class SetupBundlerTest < Minitest::Test
           require "bundler/cli/update"
           Bundler::CLI::Update.expects(:new).with(
             { conservative: true },
-            ["ruby-lsp", "debug", "prism"],
+            ["ruby-lsp", "debug", "prism", "rbs"],
           ).returns(mock_update)
 
           FileUtils.touch(File.join(dir, ".ruby-lsp", "needs_update"))
           RubyLsp::SetupBundler.new(dir, launcher: true).setup!
+        end
+      end
+    end
+  end
+
+  def test_update_does_not_fail_if_needs_update_path_was_deleted_by_concurrent_process
+    in_temp_dir do |dir|
+      File.write(File.join(dir, "Gemfile"), <<~GEMFILE)
+        source "https://rubygems.org"
+        gem "rdoc"
+      GEMFILE
+
+      capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          system("bundle install")
+          run_script(dir)
+        end
+      end
+
+      capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          needs_update_path = File.join(dir, ".ruby-lsp", "needs_update")
+
+          # Simulate a concurrent process deleting the needs_update file during bundle update
+          mock_update = mock("update")
+          mock_update.expects(:run).with do
+            File.delete(needs_update_path)
+            true
+          end
+          require "bundler/cli/update"
+          Bundler::CLI::Update.expects(:new).with(
+            { conservative: true },
+            ["ruby-lsp", "debug", "prism", "rbs"],
+          ).returns(mock_update)
+
+          FileUtils.touch(needs_update_path)
+          RubyLsp::SetupBundler.new(dir, launcher: true).setup!
+
+          refute_path_exists(File.join(dir, ".ruby-lsp", "install_error"))
         end
       end
     end
@@ -961,6 +970,53 @@ class SetupBundlerTest < Minitest::Test
     end
   end
 
+  def test_update_does_not_fail_when_lockfile_is_recopied_with_needs_update
+    in_temp_dir do |dir|
+      File.write(File.join(dir, "Gemfile"), <<~GEMFILE)
+        source "https://rubygems.org"
+        gem "rdoc"
+      GEMFILE
+
+      capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          system("bundle install")
+          # Run setup once to create the composed bundle (adds ruby-lsp to composed lockfile)
+          RubyLsp::SetupBundler.new(dir, launcher: true).setup!
+        end
+      end
+
+      # Modify the main bundle so the lockfile hash changes
+      capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          File.write(File.join(dir, "Gemfile"), <<~GEMFILE)
+            source "https://rubygems.org"
+            gem "rdoc"
+            gem "irb"
+          GEMFILE
+          system("bundle install")
+        end
+      end
+
+      # Simulate that a previous run flagged for update. This normally happens when
+      # should_bundle_update? returns true on a run where needs_update_path doesn't exist yet.
+      FileUtils.touch(File.join(dir, ".ruby-lsp", "needs_update"))
+
+      # Run setup again. The lockfile hash changed, so setup! copies the main lockfile
+      # (which doesn't have ruby-lsp) over the composed lockfile. Then needs_update
+      # causes run_bundle_install_directly to call update(), which tries
+      # `bundle update ruby-lsp` on a lockfile missing ruby-lsp, raising
+      # Bundler::GemNotFound.
+      capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          RubyLsp::SetupBundler.new(dir, launcher: true).setup!
+        end
+      end
+
+      # The setup should handle this gracefully without recording an error
+      refute_path_exists(File.join(dir, ".ruby-lsp", "install_error"))
+    end
+  end
+
   def test_is_resilient_to_pipe_being_closed_by_client_during_compose
     in_temp_dir do |dir|
       File.write(File.join(dir, "gems.rb"), <<~GEMFILE)
@@ -981,7 +1037,151 @@ class SetupBundlerTest < Minitest::Test
     end
   end
 
+  def test_does_not_report_native_extension_build_failures_to_telemetry
+    in_temp_dir do |dir|
+      File.write(File.join(dir, "gems.rb"), <<~GEMFILE)
+        source "https://rubygems.org"
+        gem "irb"
+      GEMFILE
+
+      Bundler.with_unbundled_env do
+        capture_subprocess_io do
+          system("bundle install")
+
+          compose = RubyLsp::SetupBundler.new(dir, launcher: true)
+          compose.expects(:run_bundle_install_directly).raises(
+            Bundler::InstallError,
+            "Gem::Ext::BuildError: ERROR: Failed to build gem native extension",
+          )
+          compose.setup!
+          refute_path_exists(File.join(dir, ".ruby-lsp", "install_error"))
+        end
+      end
+    end
+  end
+
+  def test_beta_adds_prerelease_constraint_to_composed_gemfile
+    in_temp_dir do |dir|
+      File.write(File.join(dir, "Gemfile"), <<~GEMFILE)
+        source "https://rubygems.org"
+        gem "rdoc"
+      GEMFILE
+
+      capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          system("bundle install")
+          run_script(dir, beta: true)
+        end
+      end
+
+      gemfile_content = File.read(File.join(dir, ".ruby-lsp", "Gemfile"))
+      assert_match(/gem "ruby-lsp", ">= 0.a", require: false, group: :development/, gemfile_content)
+      assert_valid_gemfile(File.join(dir, ".ruby-lsp", "Gemfile"))
+    end
+  end
+
+  def test_beta_adds_prerelease_constraint_to_composed_gemfile_in_launcher_mode
+    in_temp_dir do |dir|
+      File.write(File.join(dir, "Gemfile"), <<~GEMFILE)
+        source "https://rubygems.org"
+        gem "rdoc"
+      GEMFILE
+
+      capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          system("bundle install")
+          RubyLsp::SetupBundler.new(dir, launcher: true, beta: true).setup!
+        end
+      end
+
+      gemfile_content = File.read(File.join(dir, ".ruby-lsp", "Gemfile"))
+      assert_match(/gem "ruby-lsp", ">= 0.a", require: false, group: :development/, gemfile_content)
+      assert_valid_gemfile(File.join(dir, ".ruby-lsp", "Gemfile"))
+    end
+  end
+
+  def test_beta_has_no_effect_when_ruby_lsp_is_in_the_bundle_in_launcher_mode
+    in_temp_dir do |dir|
+      File.write(File.join(dir, "Gemfile"), <<~GEMFILE)
+        source "https://rubygems.org"
+        gem "ruby-lsp"
+      GEMFILE
+
+      capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          system("bundle install")
+          RubyLsp::SetupBundler.new(dir, launcher: true, beta: true).setup!
+        end
+      end
+
+      gemfile_content = File.read(File.join(dir, ".ruby-lsp", "Gemfile"))
+      refute_match(/gem "ruby-lsp", ">= 0.a", require: false, group: :development/, gemfile_content)
+    end
+  end
+
+  def test_beta_has_no_effect_when_ruby_lsp_is_in_the_bundle
+    in_temp_dir do |dir|
+      File.write(File.join(dir, "Gemfile"), <<~GEMFILE)
+        source "https://rubygems.org"
+        gem "ruby-lsp"
+      GEMFILE
+
+      capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          system("bundle install")
+          run_script(dir, beta: true)
+        end
+      end
+
+      gemfile_content = File.read(File.join(dir, ".ruby-lsp", "Gemfile"))
+      refute_match(/gem "ruby-lsp", ">= 0.a", require: false, group: :development/, gemfile_content)
+    end
+  end
+
+  def test_composed_lockfile_is_recopied_when_cli_options_change
+    in_temp_dir do |dir|
+      File.write(File.join(dir, "Gemfile"), <<~GEMFILE)
+        source "https://rubygems.org"
+        gem "rdoc"
+      GEMFILE
+
+      capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          system("bundle install")
+
+          # First run with --beta creates composed bundle
+          run_script(dir, beta: true)
+        end
+      end
+
+      assert_match(/>= 0\.a/, File.read(".ruby-lsp/Gemfile"))
+      assert_valid_gemfile(File.join(dir, ".ruby-lsp", "Gemfile"))
+
+      # Second run without --beta. The main lockfile hasn't changed, but the composed Gemfile will change. The freshness
+      # check should detect this and re-copy the lockfile from main, NOT skip it.
+      _stdout, stderr = capture_subprocess_io do
+        Bundler.with_unbundled_env do
+          RubyLsp::SetupBundler.new(File.realpath(dir)).setup!
+        end
+      end
+
+      refute_match(/>= 0\.a/, File.read(".ruby-lsp/Gemfile"))
+      assert_valid_gemfile(File.join(dir, ".ruby-lsp", "Gemfile"))
+      refute_match(
+        /Skipping composed bundle setup/,
+        stderr,
+        "Composed lockfile was not refreshed when CLI options changed",
+      )
+    end
+  end
+
   private
+
+  def assert_valid_gemfile(gemfile_path)
+    Bundler::Definition.build(gemfile_path, nil, nil)
+  rescue Bundler::GemfileError => e
+    flunk("Composed Gemfile is not valid: #{e.message}")
+  end
 
   def in_temp_dir(&block)
     Dir.mktmpdir do |dir|

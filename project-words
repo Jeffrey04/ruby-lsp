@@ -36,6 +36,7 @@ Floo
 fnmatch
 fooo
 hashkey
+heredocs
 hostedtoolcache
 importmap
 indexables
@@ -69,6 +70,7 @@ nvim
 onig # abbreviation for oniguruma
 Pacman
 pathlist
+peeraddr
 popen
 qorge
 qtlzwssomeking
@@ -116,6 +118,7 @@ unaliased
 unindexed
 unparser
 unresolve
+VALIDRUBY
 vcall
 Vinicius
 vscodemachineid

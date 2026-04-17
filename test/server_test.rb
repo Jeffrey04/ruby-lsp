@@ -383,6 +383,24 @@ class ServerTest < Minitest::Test
     assert_empty(@server.pop_response.response)
   end
 
+  def test_workspace_dependencies_returns_empty_response_when_cwd_is_deleted
+    original_dir = Dir.pwd
+
+    begin
+      parent = Dir.mktmpdir
+      workspace = File.join(parent, "workspace")
+      Dir.mkdir(workspace)
+      Dir.chdir(workspace)
+      FileUtils.rm_rf(parent)
+
+      @server.process_message({ id: 1, method: "rubyLsp/workspace/dependencies" })
+
+      assert_empty(@server.pop_response.response)
+    ensure
+      Dir.chdir(original_dir)
+    end
+  end
+
   def test_workspace_dependencies_returns_empty_list_when_there_is_no_bundle
     @server.global_state.expects(:top_level_bundle).returns(false)
     @server.process_message({ id: 1, method: "rubyLsp/workspace/dependencies" })
@@ -410,6 +428,21 @@ class ServerTest < Minitest::Test
     else
       assert_match(%r{ruby-lsp/lib/ruby_lsp/server\.rb:\d+:in `process_message'}, content)
     end
+  end
+
+  def test_send_log_message_passes_type_parameter
+    @server.expects(:workspace_dependencies).raises(StandardError, "boom")
+
+    capture_io do
+      @server.process_message({
+        id: 1,
+        method: "rubyLsp/workspace/dependencies",
+        params: {},
+      })
+    end
+
+    log = find_message(RubyLsp::Notification, "window/logMessage")
+    assert_equal(RubyLsp::Constant::MessageType::ERROR, log.params.type)
   end
 
   def test_changed_file_only_indexes_ruby
@@ -612,6 +645,31 @@ class ServerTest < Minitest::Test
     assert_equal("boom", data[:errorMessage])
     assert_equal("StandardError", data[:errorClass])
     assert_match("mocha/exception_raiser.rb", data[:backtrace])
+  end
+
+  def test_gem_not_found_setup_error_does_not_send_telemetry
+    RubyLsp::Notification.expects(:telemetry).never
+    run_initialize_server_with_setup_error(Bundler::GemNotFound.new("Could not find gem 'foo'"))
+  end
+
+  def test_git_error_setup_error_does_not_send_telemetry
+    RubyLsp::Notification.expects(:telemetry).never
+    run_initialize_server_with_setup_error(Bundler::GitError.new("Revision abc123 does not exist"))
+  end
+
+  def test_other_setup_errors_are_reported_to_telemetry
+    RubyLsp::Notification.expects(:telemetry).once
+    run_initialize_server_with_setup_error(StandardError.new("something unexpected"))
+  end
+
+  def test_dsl_error_setup_error_does_not_send_telemetry
+    RubyLsp::Notification.expects(:telemetry).never
+
+    run_initialize_server_with_setup_error(Bundler::Dsl::DSLError.new(
+      "There was an error parsing `Gemfile`: syntax errors found",
+      "Gemfile",
+      [],
+    ))
   end
 
   def test_handles_editor_indexing_settings
@@ -871,6 +929,54 @@ class ServerTest < Minitest::Test
     error = find_message(RubyLsp::Error)
     assert_equal(RubyLsp::Constant::ErrorCodes::REQUEST_CANCELLED, error.code)
     assert_equal("Request 1 was cancelled", error.message)
+  end
+
+  def test_requests_cancelled_during_processing_are_deleted_from_cancelled_requests_list
+    uri = URI("file:///foo.rb")
+
+    @server.process_message({
+      method: "textDocument/didOpen",
+      params: {
+        textDocument: {
+          uri: uri,
+          text: "class Foo\nend",
+          version: 1,
+          languageId: "ruby",
+        },
+      },
+    })
+
+    started_processing = Queue.new
+    can_finish = Queue.new
+
+    original = @server.method(:text_document_definition)
+
+    # Simulate the request starting to process, but taking long to finish. It will only finish once there's something in
+    # the `can_finish` queue
+    @server.define_singleton_method(:text_document_definition) do |message|
+      started_processing << true
+      can_finish.pop
+      original.call(message)
+    end
+
+    @server.push_message({
+      id: 1,
+      method: "textDocument/definition",
+      params: {
+        textDocument: { uri: uri },
+        position: { line: 0, character: 6 },
+      },
+    })
+
+    # Only cancel the request once we know it started processing
+    started_processing.pop
+    @server.process_message({ method: "$/cancelRequest", params: { id: 1 } })
+    # Only allow the request to finish once we know it got cancelled
+    can_finish << true
+
+    # Verify we still receive a response and that we cleaned up the cancelled list
+    find_message(RubyLsp::Result, id: 1)
+    assert_empty(@server.instance_variable_get(:@cancelled_requests))
   end
 
   def test_unsaved_changes_are_indexed_when_computing_automatic_features
@@ -1602,7 +1708,64 @@ class ServerTest < Minitest::Test
     assert_match("Document::InvalidLocationError", attributes[:message])
   end
 
+  def test_launch_bundle_compose_forwards_argv_to_launcher
+    original_argv = ARGV.dup
+    ARGV.replace(["--beta"])
+
+    @server.global_state.apply_options({
+      workspaceFolders: [{ uri: URI::Generic.from_path(path: Dir.pwd).to_s }],
+    })
+
+    # Capture the arguments passed to capture3 to verify that we're actually forwarding ARGV. This is important because
+    # the CLI arguments may change the composed Gemfile and thus running an update should not mutate it in incompatible
+    # ways
+    captured_args = nil #: Array[String]?
+    mock_status = mock("status")
+    mock_status.stubs(:exitstatus).returns(0)
+
+    Open3.stubs(:capture3).with do |*args, **_kwargs|
+      captured_args = args
+      true
+    end.returns(["", "", mock_status])
+
+    thread = @server.send(:launch_bundle_compose, "Test") { |_stderr, _status| }
+    thread.join
+
+    assert_includes(captured_args, "--beta")
+  ensure
+    ARGV.replace(original_argv)
+  end
+
+  def test_unrecognized_request_returns_method_not_found
+    non_existent_method = "textDocument/nonExistentMethod"
+    @server.process_message({
+      id: 1,
+      method: non_existent_method,
+      params: {},
+    })
+
+    error = find_message(RubyLsp::Error)
+    assert_equal(RubyLsp::Constant::ErrorCodes::METHOD_NOT_FOUND, error.code)
+    assert_equal("Method not found: #{non_existent_method}", error.message)
+  end
+
   private
+
+  def run_initialize_server_with_setup_error(error)
+    server = RubyLsp::Server.new(test_mode: true, setup_error: error)
+    capture_subprocess_io do
+      server.process_message({
+        id: 1,
+        method: "initialize",
+        params: {
+          initializationOptions: { enabledFeatures: [] },
+          capabilities: { general: { positionEncodings: ["utf-8"] } },
+        },
+      })
+    end
+  ensure
+    server&.run_shutdown
+  end
 
   def wait_for_indexing
     message = @server.pop_response

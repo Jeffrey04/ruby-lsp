@@ -2,20 +2,20 @@ import * as vscode from "vscode";
 
 import { asyncExec } from "../common";
 
-import { VersionManager, ActivationResult } from "./versionManager";
+import { VersionManager, ActivationResult, NonReportableError } from "./versionManager";
 
 // Shadowenv is a tool that allows managing environment variables upon entering a directory. It allows users to manage
 // which Ruby version should be used for each project, in addition to other customizations such as GEM_HOME.
 //
 // Learn more: https://github.com/Shopify/shadowenv
-export class UntrustedWorkspaceError extends Error {}
+export class UntrustedWorkspaceError extends NonReportableError {}
 
 export class Shadowenv extends VersionManager {
   async activate(): Promise<ActivationResult> {
     try {
       await vscode.workspace.fs.stat(vscode.Uri.joinPath(this.bundleUri, ".shadowenv.d"));
     } catch (_error: any) {
-      throw new Error(
+      throw new NonReportableError(
         "The Ruby LSP version manager is configured to be shadowenv, \
         but no .shadowenv.d directory was found in the workspace",
       );
@@ -58,7 +58,7 @@ export class Shadowenv extends VersionManager {
       try {
         await asyncExec("shadowenv --version");
       } catch (_error: any) {
-        throw new Error(
+        throw new NonReportableError(
           `Shadowenv executable not found. Ensure it is installed and available in the PATH.
            This error may happen if your shell configuration is failing to be sourced from the editor or if
            another extension is mutating the process PATH.`,
@@ -66,7 +66,7 @@ export class Shadowenv extends VersionManager {
       }
 
       // If it failed for some other reason, present the error to the user
-      throw new Error(`Failed to activate Ruby environment with Shadowenv: ${error.message}`);
+      throw new NonReportableError(`Failed to activate Ruby environment with Shadowenv: ${error.message}`);
     }
   }
 }
