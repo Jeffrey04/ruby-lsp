@@ -2,6 +2,6 @@
   "recommendations": [
     "shopify.ruby-extensions-pack",
     "dbaeumer.vscode-eslint",
-    "streetsidesoftware.code-spell-checker"
+    "ms-vscode.extension-test-runner"
   ]
 }
